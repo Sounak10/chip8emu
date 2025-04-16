@@ -1,0 +1,224 @@
+package main
+
+import (
+	"fmt"
+
+	"github.com/Sounak10/chip8emu/config"
+	"github.com/Sounak10/chip8emu/cpu"
+	"github.com/veandco/go-sdl2/sdl"
+)
+
+type SDLContext struct {
+	window   *sdl.Window
+	renderer *sdl.Renderer
+}
+
+func NewSDLContext(config *config.Config) (*SDLContext, error) {
+	err := sdl.Init(sdl.INIT_VIDEO | sdl.INIT_AUDIO | sdl.INIT_TIMER)
+	if err != nil {
+		return nil, err
+	}
+	window, err := sdl.CreateWindow("CHIP8", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED, int32(config.WindowWidth*config.ScaleFactor), int32(config.WindowHeight*config.ScaleFactor), sdl.WINDOW_SHOWN)
+	if err != nil {
+		return nil, err
+	}
+	renderer, err := sdl.CreateRenderer(window, -1, sdl.RENDERER_ACCELERATED)
+	if err != nil {
+		return nil, err
+	}
+	return &SDLContext{window: window, renderer: renderer}, nil
+}
+
+func (ctx *SDLContext) Destroy() {
+	if ctx.renderer != nil {
+		ctx.renderer.Destroy()
+	}
+	if ctx.window != nil {
+		ctx.window.Destroy()
+	}
+	sdl.Quit()
+}
+
+func (ctx *SDLContext) clearScreen(config *config.Config) {
+	// Fix color extraction to match SDL's RGBA format
+	r := uint8(config.BgColor >> 24 & 0xFF)
+	g := uint8(config.BgColor >> 16 & 0xFF)
+	b := uint8(config.BgColor >> 8 & 0xFF)
+	a := uint8(config.BgColor & 0xFF)
+	ctx.renderer.SetDrawColor(r, g, b, a)
+	ctx.renderer.Clear()
+}
+
+func (ctx *SDLContext) updateScreen(chip8 *cpu.Chip8, config *config.Config) {
+
+	// Extract foreground color components from config
+	fgR := uint8(config.FgColor >> 24 & 0xFF)
+	fgG := uint8(config.FgColor >> 16 & 0xFF)
+	fgB := uint8(config.FgColor >> 8 & 0xFF)
+	fgA := uint8(config.FgColor & 0xFF)
+
+	// Extract background color components from config
+	bgR := uint8(config.BgColor >> 24 & 0xFF)
+	bgG := uint8(config.BgColor >> 16 & 0xFF)
+	bgB := uint8(config.BgColor >> 8 & 0xFF)
+	bgA := uint8(config.BgColor & 0xFF)
+
+	rect := sdl.Rect{X: 0, Y: 0, W: int32(config.ScaleFactor), H: int32(config.ScaleFactor)}
+
+	ctx.renderer.SetDrawColor(bgR, bgG, bgB, bgA)
+	ctx.renderer.Clear()
+
+	ctx.renderer.SetDrawColor(fgR, fgG, fgB, fgA)
+
+	// Only draw foreground pixels to improve performance
+	for i := range len(chip8.Display) {
+		if chip8.Display[i] {
+			rect.X = int32(i%int(config.WindowWidth)) * int32(config.ScaleFactor)
+			rect.Y = int32(i/int(config.WindowWidth)) * int32(config.ScaleFactor)
+			ctx.renderer.FillRect(&rect)
+			if config.PixelOutline {
+				ctx.renderer.SetDrawColor(bgR, bgG, bgB, bgA)
+				ctx.renderer.DrawRect(&rect)
+				ctx.renderer.SetDrawColor(fgR, fgG, fgB, fgA)
+			}
+		}
+	}
+
+	ctx.renderer.Present()
+}
+
+func main() {
+	config := config.NewConfig(64, 32, 0xFFA4FFFF, 0x000000FF, 10, true, 700)
+	sdlContext, err := NewSDLContext(config)
+	if err != nil {
+		panic(err)
+	}
+	defer sdlContext.Destroy()
+
+	chip8, err := cpu.NewChip8("roms/Tetris.ch8")
+	if err != nil {
+		panic(err)
+	}
+
+	// Initial screen clear
+	sdlContext.clearScreen(config)
+
+	for chip8.State != cpu.QUIT {
+		handleInput(chip8)
+		if chip8.State == cpu.PAUSED {
+			continue
+		}
+
+		before := sdl.GetPerformanceCounter()
+
+		for range int(config.InstructionPerSec / 60) {
+			chip8.EmulateInstruction(config)
+		}
+		after := sdl.GetPerformanceCounter()
+		elapsed := float64((after-before)*1000) / float64(sdl.GetPerformanceFrequency())
+		if 16.67 > elapsed {
+			sdl.Delay(uint32(16.67 - elapsed))
+		}
+
+		sdlContext.updateScreen(chip8, config)
+		chip8.UpdateTimers()
+	}
+
+}
+
+func handleInput(chip8 *cpu.Chip8) {
+	for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
+		switch event.(type) {
+		case *sdl.QuitEvent:
+			chip8.State = cpu.QUIT
+		case *sdl.KeyboardEvent:
+			keyboardEvent := event.(*sdl.KeyboardEvent)
+
+			if keyboardEvent.Type == sdl.KEYDOWN {
+				switch keyboardEvent.Keysym.Sym {
+				case sdl.K_ESCAPE:
+					chip8.State = cpu.QUIT
+				case sdl.K_SPACE:
+					if chip8.State == cpu.PAUSED {
+						chip8.State = cpu.RUNNING
+					} else {
+						chip8.State = cpu.PAUSED
+						fmt.Println("======= PAUSED =======")
+					}
+				case sdl.K_1:
+					chip8.KeyPad[0] = true
+				case sdl.K_2:
+					chip8.KeyPad[1] = true
+				case sdl.K_3:
+					chip8.KeyPad[2] = true
+				case sdl.K_4:
+					chip8.KeyPad[3] = true
+				case sdl.K_q:
+					chip8.KeyPad[4] = true
+				case sdl.K_w:
+					chip8.KeyPad[5] = true
+				case sdl.K_e:
+					chip8.KeyPad[6] = true
+				case sdl.K_r:
+					chip8.KeyPad[7] = true
+				case sdl.K_a:
+					chip8.KeyPad[8] = true
+				case sdl.K_s:
+					chip8.KeyPad[9] = true
+				case sdl.K_d:
+					chip8.KeyPad[10] = true
+				case sdl.K_f:
+					chip8.KeyPad[11] = true
+				case sdl.K_z:
+					chip8.KeyPad[12] = true
+				case sdl.K_x:
+					chip8.KeyPad[13] = true
+				case sdl.K_c:
+					chip8.KeyPad[14] = true
+				case sdl.K_v:
+					chip8.KeyPad[15] = true
+				default:
+
+				}
+
+			} else if keyboardEvent.Type == sdl.KEYUP {
+				switch keyboardEvent.Keysym.Sym {
+				case sdl.K_1:
+					chip8.KeyPad[0] = false
+				case sdl.K_2:
+					chip8.KeyPad[1] = false
+				case sdl.K_3:
+					chip8.KeyPad[2] = false
+				case sdl.K_4:
+					chip8.KeyPad[3] = false
+				case sdl.K_q:
+					chip8.KeyPad[4] = false
+				case sdl.K_w:
+					chip8.KeyPad[5] = false
+				case sdl.K_e:
+					chip8.KeyPad[6] = false
+				case sdl.K_r:
+					chip8.KeyPad[7] = false
+				case sdl.K_a:
+					chip8.KeyPad[8] = false
+				case sdl.K_s:
+					chip8.KeyPad[9] = false
+				case sdl.K_d:
+					chip8.KeyPad[10] = false
+				case sdl.K_f:
+					chip8.KeyPad[11] = false
+				case sdl.K_z:
+					chip8.KeyPad[12] = false
+				case sdl.K_x:
+					chip8.KeyPad[13] = false
+				case sdl.K_c:
+					chip8.KeyPad[14] = false
+				case sdl.K_v:
+					chip8.KeyPad[15] = false
+				default:
+				}
+
+			}
+		}
+	}
+}
